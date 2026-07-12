@@ -75,12 +75,21 @@ def get_conversations(current_user=Depends(get_current_user)):
                 """
                 SELECT
                     c.id,
-                    c.user1_id,
-                    c.user2_id,
+                    CASE WHEN c.user1_id = %s THEN c.user2_id ELSE c.user1_id END AS peer_id,
+                    u.display_name,
+                    u.username,
+                    u.profile_photo,
+                    u.last_seen,
+                    u.status,
                     m.content AS last_message,
                     m.created_at AS last_message_at,
-                    m.sender_id AS last_sender_id
+                    m.sender_id AS last_sender_id,
+                    (SELECT COUNT(*) FROM messages um
+                     WHERE um.conversation_id = c.id
+                     AND um.sender_id = CASE WHEN c.user1_id = %s THEN c.user2_id ELSE c.user1_id END
+                     AND um.read_at IS NULL) AS unread_count
                 FROM conversations c
+                JOIN users u ON u.id = CASE WHEN c.user1_id = %s THEN c.user2_id ELSE c.user1_id END
                 JOIN LATERAL (
                     SELECT content, created_at, sender_id
                     FROM messages
@@ -91,7 +100,8 @@ def get_conversations(current_user=Depends(get_current_user)):
                 WHERE c.user1_id = %s OR c.user2_id = %s
                 ORDER BY m.created_at DESC
                 """,
-                (current_user["id"], current_user["id"])
+                (current_user["id"], current_user["id"], current_user["id"],
+                 current_user["id"], current_user["id"])
             )
 
             rows = cursor.fetchall()
@@ -99,51 +109,70 @@ def get_conversations(current_user=Depends(get_current_user)):
             conversations = []
 
             for row in rows:
-                conv_id = str(row[0])
-                user1_id = str(row[1])
-                user2_id = str(row[2])
-
-                peer_id = user2_id if user1_id == current_user["id"] else user1_id
-
-                cursor.execute(
-                    "SELECT display_name, username, profile_photo, last_seen, status FROM users WHERE id = %s",
-                    (peer_id,)
-                )
-                peer_row = cursor.fetchone()
-                peer_name = (peer_row[0] if peer_row[0] else peer_row[1]) if peer_row else "Unknown"
-                peer_photo = peer_row[2] if peer_row else None
-                peer_last_seen = peer_row[3].isoformat() if peer_row and peer_row[3] else None
-                peer_status = (peer_row[4] or "") if peer_row else ""
-
-                cursor.execute(
-                    """
-                    SELECT COUNT(*) FROM messages
-                    WHERE conversation_id = %s
-                    AND sender_id = %s
-                    AND read_at IS NULL
-                    """,
-                    (conv_id, peer_id)
-                )
-                unread_count = cursor.fetchone()[0]
+                peer_id = str(row[1])
+                peer_name = (row[2] if row[2] else row[3]) or "Unknown"
+                peer_photo = row[4]
+                peer_last_seen = row[5].isoformat() if row[5] else None
+                peer_status = (row[6] or "")
 
                 conversations.append({
-                    "id": conv_id,
+                    "id": str(row[0]),
                     "peer_id": peer_id,
                     "peer_name": peer_name,
                     "peer_photo": peer_photo,
                     "peer_online": manager.is_online(peer_id),
                     "peer_last_seen": peer_last_seen,
                     "peer_status": peer_status,
-                    "last_message": row[3],
-                    "last_message_at": row[4].isoformat() if row[4] else None,
-                    "last_sender_id": str(row[5]) if row[5] else None,
-                    "unread_count": unread_count,
+                    "last_message": row[7],
+                    "last_message_at": row[8].isoformat() if row[8] else None,
+                    "last_sender_id": str(row[9]) if row[9] else None,
+                    "unread_count": row[10],
                 })
 
             return conversations
 
     finally:
         conn.close()
+
+
+@router.post("/messages/mark-read/{peer_id}")
+async def mark_messages_read(
+    peer_id: str,
+    current_user=Depends(get_current_user)
+):
+    user_id = current_user["id"]
+    first, second = sorted([user_id, peer_id])
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM conversations WHERE user1_id = %s AND user2_id = %s",
+                (first, second)
+            )
+            row = cursor.fetchone()
+            if row:
+                conv_id = str(row[0])
+                cursor.execute(
+                    """
+                    UPDATE messages SET read_at = NOW(), delivered_at = COALESCE(delivered_at, NOW())
+                    WHERE conversation_id = %s
+                    AND sender_id = %s
+                    AND read_at IS NULL
+                    """,
+                    (conv_id, peer_id)
+                )
+            conn.commit()
+    finally:
+        conn.close()
+
+    await manager.send_message(peer_id, {
+        "event": "read_receipt",
+        "reader_id": user_id,
+        "conversation_id": peer_id,
+    })
+
+    return {"ok": True}
 
 
 @router.post("/upload-file")

@@ -75,7 +75,10 @@ CREATE TABLE IF NOT EXISTS backup_media (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
+CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(conversation_id, sender_id) WHERE read_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_conversations_user1 ON conversations(user1_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_user2 ON conversations(user2_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_reactions_message ON reactions(message_id);
 CREATE TABLE IF NOT EXISTS statuses (
     id UUID PRIMARY KEY,

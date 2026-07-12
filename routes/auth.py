@@ -138,6 +138,11 @@ def login(request: LoginRequest):
                 )
             )
 
+            cursor.execute(
+                "UPDATE users SET last_seen = NOW() WHERE id = %s",
+                (user_id,)
+            )
+
         conn.commit()
 
         return {
@@ -299,6 +304,28 @@ def upload_profile_photo(
         "message": "Profile photo uploaded successfully",
         "profile_photo": photo_url
     }
+
+
+@router.post("/register-fcm-token")
+def register_fcm_token(
+    request: dict,
+    current_user=Depends(get_current_user)
+):
+    fcm_token = request.get("fcm_token", "").strip()
+    if not fcm_token:
+        raise HTTPException(status_code=400, detail="fcm_token is required")
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE users SET fcm_token = %s WHERE id = %s",
+                (fcm_token, current_user["id"])
+            )
+        conn.commit()
+        return {"message": "FCM token registered"}
+    finally:
+        conn.close()
 
 
 @router.post("/feedback")

@@ -41,6 +41,21 @@ def run_migrations():
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_status_views_status ON status_views(status_id)
             """)
+            cur.execute("""
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token TEXT DEFAULT NULL
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(conversation_id, sender_id) WHERE read_at IS NULL
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_conversations_user1 ON conversations(user1_id)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_conversations_user2 ON conversations(user2_id)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)
+            """)
         conn.commit()
         print("Migrations complete.")
     finally:

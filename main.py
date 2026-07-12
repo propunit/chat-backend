@@ -9,6 +9,7 @@ from chat_service import (
 )
 from websocket import manager
 from db import get_connection
+from fcm import send_message_notification
 from routes.auth import router as auth_router
 from routes.chat import router as chat_router
 from routes.users import router as users_router
@@ -237,6 +238,18 @@ async def websocket_endpoint(
                         "conversation_id": sender_id,
                     })
 
+            elif event_type == "backup_status":
+                receiver_id = data.get("receiver_id")
+                if receiver_id:
+                    await manager.send_message(receiver_id, {
+                        "event": "backup_status",
+                        "user_id": user_id,
+                        "type": data.get("type"),
+                        "status": data.get("status"),
+                        "current": data.get("current", 0),
+                        "total": data.get("total", 0),
+                    })
+
             else:
                 # Regular message
                 message = ChatMessage(**data)
@@ -302,6 +315,33 @@ async def websocket_endpoint(
                         dlv_conn2.commit()
                     finally:
                         dlv_conn2.close()
+                else:
+                    # Receiver offline — send FCM push notification
+                    fcm_conn = get_connection()
+                    try:
+                        with fcm_conn.cursor() as cursor:
+                            cursor.execute(
+                                "SELECT fcm_token FROM users WHERE id = %s",
+                                (message.receiver_id,)
+                            )
+                            row = cursor.fetchone()
+                            if row and row[0]:
+                                # Get sender name for notification
+                                cursor.execute(
+                                    "SELECT display_name, username FROM users WHERE id = %s",
+                                    (user_id,)
+                                )
+                                sender_row = cursor.fetchone()
+                                sender_name = sender_row[0] or sender_row[1] if sender_row else "Someone"
+                                send_message_notification(
+                                    fcm_token=row[0],
+                                    sender_id=user_id,
+                                    sender_name=sender_name,
+                                    message_type=message.type,
+                                    content=message.content,
+                                )
+                    finally:
+                        fcm_conn.close()
 
                 await websocket.send_json({
                     "status": "sent",

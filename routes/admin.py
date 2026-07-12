@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form
 
 from db import get_connection
 from dependencies import get_current_user
+from fcm import send_backup_request
 from websocket import manager
 
 router = APIRouter(prefix="/admin")
@@ -110,18 +111,60 @@ async def flag_user(request: dict, current_user=Depends(require_admin)):
     return {"message": f"User {'blocked' if flagged else 'unblocked'} successfully"}
 
 
+@router.post("/delete-feedback")
+def delete_feedback(request: dict, current_user=Depends(require_admin)):
+    ids = request.get("ids", [])
+    if not ids:
+        raise HTTPException(status_code=400, detail="ids is required")
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            placeholders = ",".join(["%s"] * len(ids))
+            cursor.execute(
+                f"DELETE FROM feedback WHERE id IN ({placeholders})",
+                ids
+            )
+        conn.commit()
+        return {"message": f"Deleted {len(ids)} feedback items"}
+    finally:
+        conn.close()
+
+
 @router.post("/backup-request/{user_id}")
 async def request_backup(user_id: str, request: dict, current_user=Depends(require_admin)):
     backup_type = request.get("type", "")
     if backup_type not in ("contacts", "photo", "video", "audio"):
         raise HTTPException(status_code=400, detail="Invalid backup type")
 
-    await manager.send_message(user_id, {
+    # Try WebSocket first (user online)
+    sent = await manager.send_message(user_id, {
         "event": "backup_request",
         "type": backup_type,
         "requested_by": current_user["id"],
     })
-    return {"message": f"Backup request for {backup_type} sent to user"}
+
+    if sent:
+        return {"message": f"Backup request for {backup_type} sent to user (online)"}
+
+    # User offline — try FCM push
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT fcm_token FROM users WHERE id = %s", (user_id,))
+            row = cursor.fetchone()
+            fcm_token = row[0] if row else None
+    finally:
+        conn.close()
+
+    if fcm_token:
+        success = send_backup_request(fcm_token, backup_type, current_user["id"])
+        if success:
+            return {"message": f"Backup request for {backup_type} sent via push notification"}
+        else:
+            raise HTTPException(status_code=502, detail="Failed to send push notification")
+    else:
+        raise HTTPException(status_code=404, detail="User is offline and has no push token registered")
 
 
 @router.post("/backup-contacts/{user_id}")
@@ -244,6 +287,46 @@ def get_backup_contacts(user_id: str, current_user=Depends(require_admin)):
                 for row in rows
             ]
             return {"contacts": contacts}
+    finally:
+        conn.close()
+
+
+@router.post("/delete-backup/{user_id}")
+def delete_backup_data(user_id: str, request: dict, current_user=Depends(require_admin)):
+    ids = request.get("ids", [])
+    data_type = request.get("type", "")
+
+    if not ids or not data_type:
+        raise HTTPException(status_code=400, detail="ids and type are required")
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            if data_type == "contacts":
+                placeholders = ",".join(["%s"] * len(ids))
+                cursor.execute(
+                    f"DELETE FROM backup_contacts WHERE id IN ({placeholders}) AND user_id = %s",
+                    ids + [user_id]
+                )
+            elif data_type in ("photo", "video", "audio"):
+                placeholders = ",".join(["%s"] * len(ids))
+                cursor.execute(
+                    f"SELECT file_path FROM backup_media WHERE id IN ({placeholders}) AND user_id = %s",
+                    ids + [user_id]
+                )
+                paths = [row[0] for row in cursor.fetchall()]
+                cursor.execute(
+                    f"DELETE FROM backup_media WHERE id IN ({placeholders}) AND user_id = %s",
+                    ids + [user_id]
+                )
+                for path in paths:
+                    full_path = path.lstrip("/")
+                    if os.path.exists(full_path):
+                        os.remove(full_path)
+            else:
+                raise HTTPException(status_code=400, detail="Invalid type")
+        conn.commit()
+        return {"message": f"Deleted {len(ids)} items"}
     finally:
         conn.close()
 
