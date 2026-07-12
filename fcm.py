@@ -10,13 +10,22 @@ def _init_firebase():
     if _initialized:
         return
 
+    import json
+
+    cred_json = os.environ.get("FIREBASE_CREDENTIALS_JSON")
+    if cred_json:
+        cred = credentials.Certificate(json.loads(cred_json))
+        firebase_admin.initialize_app(cred)
+        _initialized = True
+        return
+
     cred_path = os.environ.get("FIREBASE_CREDENTIALS", "firebase-credentials.json")
     if os.path.exists(cred_path):
         cred = credentials.Certificate(cred_path)
         firebase_admin.initialize_app(cred)
         _initialized = True
     else:
-        print(f"WARNING: Firebase credentials not found at {cred_path}. FCM disabled.")
+        print(f"WARNING: Firebase credentials not found. FCM disabled.")
 
 
 def send_backup_request(fcm_token: str, backup_type: str, admin_id: str) -> bool:
