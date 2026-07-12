@@ -28,7 +28,7 @@ def get_current_user(authorization: str = Header(None)):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT u.id, u.username, s.expires_at, u.is_admin
+                SELECT u.id, u.username, s.expires_at, u.is_admin, u.display_name
                 FROM sessions s
                 JOIN users u
                     ON u.id = s.user_id
@@ -64,6 +64,7 @@ def get_current_user(authorization: str = Header(None)):
                 "id": str(user[0]),
                 "username": user[1],
                 "is_admin": user[3] if user[3] else False,
+                "display_name": user[4] if len(user) > 4 else None,
             }
 
     finally:

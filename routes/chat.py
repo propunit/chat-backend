@@ -9,6 +9,7 @@ from repositories.chat_repository import get_messages
 from schemas import ChatMessage
 from chat_service import get_or_create_conversation, save_message
 from websocket import manager
+from fcm import send_message_notification
 
 CHAT_UPLOAD_DIR = "uploads/chat"
 os.makedirs(CHAT_UPLOAD_DIR, exist_ok=True)
@@ -96,6 +97,26 @@ async def send_message(
             dlv_conn.commit()
         finally:
             dlv_conn.close()
+    else:
+        fcm_conn = get_connection()
+        try:
+            with fcm_conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT fcm_token FROM users WHERE id = %s",
+                    (message.receiver_id,)
+                )
+                row = cursor.fetchone()
+                if row and row[0]:
+                    sender_name = current_user.get("display_name") or current_user.get("username") or "Someone"
+                    send_message_notification(
+                        fcm_token=row[0],
+                        sender_id=current_user["id"],
+                        sender_name=sender_name,
+                        message_type=message.type,
+                        content=message.content,
+                    )
+        finally:
+            fcm_conn.close()
 
     return payload
 
