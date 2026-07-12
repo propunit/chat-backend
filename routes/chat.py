@@ -33,7 +33,7 @@ def chat_history(
 
 
 @router.post("/messages/send")
-def send_message(
+async def send_message(
     message: ChatMessage,
     current_user=Depends(get_current_user)
 ):
@@ -51,7 +51,7 @@ def send_message(
         reply_to_id=message.reply_to_id
     )
 
-    return {
+    payload = {
         "id": saved["id"],
         "conversation_id": conversation_id,
         "sender_id": current_user["id"],
@@ -61,6 +61,43 @@ def send_message(
         "created_at": saved["created_at"],
         "reply_to_id": message.reply_to_id,
     }
+
+    if message.reply_to_id:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT m.content, m.message_type, m.sender_id, u.display_name, u.username
+                    FROM messages m JOIN users u ON u.id = m.sender_id
+                    WHERE m.id = %s
+                    """,
+                    (message.reply_to_id,)
+                )
+                rrow = cur.fetchone()
+                if rrow:
+                    payload["reply_to_content"] = rrow[0]
+                    payload["reply_to_type"] = rrow[1]
+                    payload["reply_to_sender_id"] = str(rrow[2])
+                    payload["reply_to_sender_name"] = rrow[3] or rrow[4]
+        finally:
+            conn.close()
+
+    delivered = await manager.send_message(message.receiver_id, payload)
+
+    if delivered:
+        dlv_conn = get_connection()
+        try:
+            with dlv_conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE messages SET delivered_at = NOW() WHERE id = %s AND delivered_at IS NULL",
+                    (saved["id"],)
+                )
+            dlv_conn.commit()
+        finally:
+            dlv_conn.close()
+
+    return payload
 
 
 @router.get("/conversations")
