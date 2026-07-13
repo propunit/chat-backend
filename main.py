@@ -238,6 +238,56 @@ async def websocket_endpoint(
                         "conversation_id": sender_id,
                     })
 
+            elif event_type == "call_offer":
+                receiver_id = data.get("receiver_id")
+                if receiver_id:
+                    sent = await manager.send_message(receiver_id, {
+                        "event": "call_offer",
+                        "sender_id": user_id,
+                        "call_type": data.get("call_type", "audio"),
+                        "sdp": data.get("sdp"),
+                    })
+                    if not sent:
+                        await websocket.send_json({
+                            "event": "call_unavailable",
+                            "receiver_id": receiver_id,
+                        })
+
+            elif event_type == "call_answer":
+                receiver_id = data.get("receiver_id")
+                if receiver_id:
+                    await manager.send_message(receiver_id, {
+                        "event": "call_answer",
+                        "sender_id": user_id,
+                        "sdp": data.get("sdp"),
+                    })
+
+            elif event_type == "call_reject":
+                receiver_id = data.get("receiver_id")
+                if receiver_id:
+                    await manager.send_message(receiver_id, {
+                        "event": "call_reject",
+                        "sender_id": user_id,
+                        "reason": data.get("reason", "rejected"),
+                    })
+
+            elif event_type == "call_end":
+                receiver_id = data.get("receiver_id")
+                if receiver_id:
+                    await manager.send_message(receiver_id, {
+                        "event": "call_end",
+                        "sender_id": user_id,
+                    })
+
+            elif event_type == "ice_candidate":
+                receiver_id = data.get("receiver_id")
+                if receiver_id:
+                    await manager.send_message(receiver_id, {
+                        "event": "ice_candidate",
+                        "sender_id": user_id,
+                        "candidate": data.get("candidate"),
+                    })
+
             elif event_type == "backup_status":
                 receiver_id = data.get("receiver_id")
                 if receiver_id:
@@ -356,30 +406,32 @@ async def websocket_endpoint(
 
     except WebSocketDisconnect:
         if user_id:
-            manager.disconnect(user_id)
-            _save_last_seen(user_id)
-            for uid, ws in manager.connections.items():
-                try:
-                    await ws.send_json({
-                        "event": "user_offline",
-                        "user_id": user_id,
-                    })
-                except:
-                    pass
+            # Only mark offline if THIS socket is still the user's current one.
+            # A reconnect may have already replaced it; don't evict the live one.
+            if manager.disconnect(user_id, websocket):
+                _save_last_seen(user_id)
+                for uid, ws in manager.connections.items():
+                    try:
+                        await ws.send_json({
+                            "event": "user_offline",
+                            "user_id": user_id,
+                        })
+                    except:
+                        pass
 
     except Exception as e:
         print(f"WebSocket error: {e}")
         if user_id:
-            manager.disconnect(user_id)
-            _save_last_seen(user_id)
-            for uid, ws in manager.connections.items():
-                try:
-                    await ws.send_json({
-                        "event": "user_offline",
-                        "user_id": user_id,
-                    })
-                except:
-                    pass
+            if manager.disconnect(user_id, websocket):
+                _save_last_seen(user_id)
+                for uid, ws in manager.connections.items():
+                    try:
+                        await ws.send_json({
+                            "event": "user_offline",
+                            "user_id": user_id,
+                        })
+                    except:
+                        pass
 
 
 if __name__ == "__main__":

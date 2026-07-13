@@ -103,6 +103,7 @@ def create_media_status(
 def get_all_statuses(current_user=Depends(get_current_user)):
     conn = get_connection()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=EXPIRY_HOURS)
+    my_id = current_user["id"]
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -113,9 +114,14 @@ def get_all_statuses(current_user=Depends(get_current_user)):
                 FROM statuses s
                 JOIN users u ON u.id = s.user_id
                 WHERE s.created_at > %s
+                  AND (s.user_id = %s OR s.user_id IN (
+                    SELECT CASE WHEN user1_id = %s THEN user2_id ELSE user1_id END
+                    FROM conversations
+                    WHERE user1_id = %s OR user2_id = %s
+                  ))
                 ORDER BY s.created_at DESC
                 """,
-                (cutoff,),
+                (cutoff, my_id, my_id, my_id, my_id),
             )
             rows = cur.fetchall()
 
@@ -157,7 +163,6 @@ def get_all_statuses(current_user=Depends(get_current_user)):
                 })
 
             # Separate my statuses from others
-            my_id = current_user["id"]
             my_statuses = users_map.pop(my_id, None)
             others = list(users_map.values())
 

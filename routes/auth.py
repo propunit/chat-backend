@@ -4,10 +4,14 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Depends, File, UploadFile
 import bcrypt
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
 from db import get_connection
 from schemas import LoginRequest, RegisterRequest, ChangePasswordRequest, ChangeDisplayNameRequest
 from dependencies import get_current_user
+
+GOOGLE_WEB_CLIENT_ID = "343091332306-ng4j4mnokn94u0vra07su8d8r886scbt.apps.googleusercontent.com"
 
 UPLOAD_DIR = "uploads/avatars"
 
@@ -155,6 +159,76 @@ def login(request: LoginRequest):
             "is_admin": is_admin or False,
         }
 
+    finally:
+        conn.close()
+
+
+@router.post("/google-login")
+def google_login(request: dict):
+    token = request.get("id_token", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="id_token is required")
+
+    try:
+        idinfo = id_token.verify_oauth2_token(
+            token, google_requests.Request(), GOOGLE_WEB_CLIENT_ID
+        )
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+
+    google_email = idinfo.get("email", "")
+    google_name = idinfo.get("name", "")
+    google_picture = idinfo.get("picture", "")
+
+    if not google_email:
+        raise HTTPException(status_code=400, detail="Email not available from Google")
+
+    username = google_email.split("@")[0]
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, display_name, profile_photo, status, is_admin, flagged FROM users WHERE username = %s",
+                (username,)
+            )
+            user = cursor.fetchone()
+
+            if user:
+                user_id, display_name, profile_photo, status, is_admin, flagged = user
+                if flagged:
+                    raise HTTPException(status_code=403, detail="Your account has been blocked. Contact admin.")
+            else:
+                user_id = str(uuid.uuid4())
+                display_name = google_name or username
+                profile_photo = google_picture or None
+                status = ""
+                is_admin = False
+                password_hash = bcrypt.hashpw(uuid.uuid4().hex.encode(), bcrypt.gensalt()).decode()
+                cursor.execute(
+                    "INSERT INTO users (id, username, display_name, password_hash, profile_photo) VALUES (%s, %s, %s, %s, %s)",
+                    (user_id, username, display_name, password_hash, profile_photo)
+                )
+
+            token_val = str(uuid.uuid4())
+            expires_at = datetime.utcnow() + timedelta(days=SESSION_DAYS)
+            cursor.execute(
+                "INSERT INTO sessions (token, user_id, expires_at) VALUES (%s, %s, %s)",
+                (token_val, user_id, expires_at)
+            )
+            cursor.execute("UPDATE users SET last_seen = NOW() WHERE id = %s", (user_id,))
+
+        conn.commit()
+
+        return {
+            "token": token_val,
+            "user_id": str(user_id),
+            "username": username,
+            "display_name": display_name or username,
+            "profile_photo": profile_photo,
+            "status": status or "",
+            "is_admin": is_admin or False,
+        }
     finally:
         conn.close()
 
